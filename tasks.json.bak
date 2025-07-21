@@ -3,7 +3,7 @@
     "6a64edcc-7491-422d-9dc1-e92e31f65b6f": {
       "id": "6a64edcc-7491-422d-9dc1-e92e31f65b6f",
       "task": "10 ta shena",
-      "done": false,
+      "done": true,
       "xp": 10,
       "due_time": null
     },
@@ -16,5 +16,5 @@
     }
   },
   "_level": 1,
-  "_total_xp": 0
+  "_total_xp": 10
 }
