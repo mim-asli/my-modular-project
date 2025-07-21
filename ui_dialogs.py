@@ -244,9 +244,14 @@ class XPHistoryWindow(tk.Toplevel):
     """
     A window to display the history of daily XP earned, including a trend chart.
     Shows XP earned per day and a list of completed tasks for each day.
+    Allows editing and deleting tasks directly from history.
     """
-    def __init__(self, parent: tk.Tk, tasks_data: dict):
+    def __init__(self, parent: tk.Tk, tasks_data: dict, app_instance: 'XPDashboardApp'):
         super().__init__(parent)
+        self.parent = parent
+        self.tasks_data = tasks_data # Raw tasks data loaded from JSON
+        self.app_instance = app_instance # Reference to the main application instance
+        
         self.title("XP History")
         self.geometry("700x700") # Increased size to accommodate the chart
         self.configure(bg=DARK_BG)
@@ -261,7 +266,6 @@ class XPHistoryWindow(tk.Toplevel):
         chart_frame = tk.Frame(self, bg=DARK_FRAME_BG, bd=2, relief="groove")
         chart_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
-        self.tasks_data = tasks_data # Raw tasks data loaded from JSON
         self._plot_xp_history(chart_frame) # Plot the XP history chart
 
         # Canvas and Scrollbar for scrollable history display
@@ -339,6 +343,10 @@ class XPHistoryWindow(tk.Toplevel):
 
     def _display_history(self) -> None:
         """Populates the history window with daily XP records (textual list)."""
+        # Clear existing widgets
+        for widget in self.scrollable_frame.winfo_children():
+            widget.destroy()
+
         # Get all date keys from tasks_data, excluding internal keys (like _level, _total_xp)
         dates = [d for d in self.tasks_data.keys() if not d.startswith('_')]
         # Sort dates in reverse chronological order
@@ -351,10 +359,11 @@ class XPHistoryWindow(tk.Toplevel):
         for date_str in dates:
             # Retrieve tasks for the current date. Handle both old list format and new dict format.
             daily_tasks_raw = self.tasks_data.get(date_str, {})
-            daily_tasks = list(daily_tasks_raw.values()) if isinstance(daily_tasks_raw, dict) else daily_tasks_raw
+            # Ensure daily_tasks is a dictionary, even if it was stored as a list (for old data migration)
+            daily_tasks_dict = daily_tasks_raw if isinstance(daily_tasks_raw, dict) else {t.get('id', str(uuid.uuid4())): t for t in daily_tasks_raw}
 
             # Calculate total XP earned for this specific day
-            daily_xp = sum(t['xp'] for t in daily_tasks if t['done'])
+            daily_xp = sum(t['xp'] for t in daily_tasks_dict.values() if t['done'])
 
             # Create a frame for each day's summary
             frame = tk.Frame(self.scrollable_frame, bg=DARK_FRAME_BG, bd=2, relief="groove")
@@ -364,13 +373,36 @@ class XPHistoryWindow(tk.Toplevel):
             tk.Label(frame, text=f"Date: {date_str}", font=("Segoe UI", 12, "bold"), bg=DARK_FRAME_BG, fg=ACCENT_COLOR).pack(anchor="w", padx=10, pady=3)
             tk.Label(frame, text=f"XP Earned: {daily_xp}", font=("Segoe UI", 12), bg=DARK_FRAME_BG, fg=DARK_TEXT).pack(anchor="w", padx=10, pady=3)
             
-            # List completed tasks for the day
-            completed_tasks_today = [t['task'] for t in daily_tasks if t['done']]
-            if completed_tasks_today:
+            # List completed tasks for the day with edit/delete buttons
+            completed_tasks_for_display = [t for t in daily_tasks_dict.values() if t['done']]
+            if completed_tasks_for_display:
                 tk.Label(frame, text="Completed Tasks:", font=("Segoe UI", 11, "italic"), bg=DARK_FRAME_BG, fg=DARK_TEXT).pack(anchor="w", padx=15)
-                # Display up to 3 completed tasks to keep the view concise
-                for task_name in completed_tasks_today[:3]:
-                    tk.Label(frame, text=f"- {task_name}", font=("Segoe UI", 11), bg=DARK_FRAME_BG, fg=DARK_TEXT, wraplength=350).pack(anchor="w", padx=20)
+                
+                for task in completed_tasks_for_display:
+                    task_row_in_history_frame = tk.Frame(frame, bg=DARK_FRAME_BG)
+                    task_row_in_history_frame.pack(fill="x", padx=20, pady=2)
+                    
+                    task_display_text = f"- {task['task']} ({task['xp']} XP)"
+                    if task.get("due_time"):
+                        task_display_text += f" @ {task['due_time']}"
+
+                    tk.Label(task_row_in_history_frame, text=task_display_text, font=("Segoe UI", 11), bg=DARK_FRAME_BG, fg=DARK_TEXT, wraplength=300, anchor="w").pack(side="left", fill="x", expand=True)
+
+                    # Edit button for task in history
+                    edit_btn = tk.Button(task_row_in_history_frame, text="✏️", font=("Segoe UI", 9),
+                                         bg=WARNING_COLOR, fg=DARK_BG, relief="flat", padx=3, pady=1,
+                                         command=lambda d=date_str, t_id=task['id']: self._edit_task_from_history(d, t_id),
+                                         activebackground="#c7a35e", activeforeground=DARK_TEXT)
+                    edit_btn.pack(side="left", padx=(5, 2))
+
+                    # Delete button for task in history
+                    del_btn = tk.Button(task_row_in_history_frame, text="🗑️", font=("Segoe UI", 9),
+                                         bg=ERROR_COLOR, fg="white", relief="flat", padx=3, pady=1,
+                                         command=lambda d=date_str, t_id=task['id']: self._delete_task_from_history(d, t_id),
+                                         activebackground="#a03d45", activeforeground="white")
+                    del_btn.pack(side="left", padx=(0, 5))
+            else:
+                tk.Label(frame, text="No completed tasks for this day.", font=("Segoe UI", 11, "italic"), bg=DARK_FRAME_BG, fg=DARK_TEXT).pack(anchor="w", padx=15)
             
             # Separator line between daily entries
             tk.Frame(self.scrollable_frame, height=1, bg=DARK_TEXT).pack(fill="x", padx=5, pady=5)
@@ -378,6 +410,50 @@ class XPHistoryWindow(tk.Toplevel):
         # Update canvas scroll region after all widgets are packed
         self.canvas.update_idletasks()
         self.canvas.config(scrollregion=self.canvas.bbox("all"))
+
+    def _edit_task_from_history(self, date_str: str, task_id: str) -> None:
+        """
+        Handles editing a task from the history window.
+        Changes the main app's current date, then calls the main app's edit_task.
+        """
+        # Change the main app's current date to the date of the task
+        # This will trigger app._load_app_state() and app.populate_tasks()
+        self.app_instance.current_date = date_str
+        self.app_instance.date_btn.config(text=f"Select Date ({self.app_instance.current_date})")
+        self.app_instance._load_app_state()
+        self.app_instance.populate_tasks()
+
+        # Now, call the main app's edit_task method for the specific task
+        # The main app's UI will update to show the task details dialog
+        self.app_instance.edit_task(task_id)
+
+        # After editing, refresh the history window to reflect changes
+        self.tasks_data = self.app_instance.data_manager.load_tasks_data() # Reload data
+        self._display_history() # Re-render history list
+        self._plot_xp_history(self.winfo_children()[1]) # Re-plot chart (assuming chart_frame is the second child)
+
+
+    def _delete_task_from_history(self, date_str: str, task_id: str) -> None:
+        """
+        Handles deleting a task from the history window.
+        Changes the main app's current date, then calls the main app's delete_task.
+        """
+        # Change the main app's current date to the date of the task
+        # This will trigger app._load_app_state() and app.populate_tasks()
+        self.app_instance.current_date = date_str
+        self.app_instance.date_btn.config(text=f"Select Date ({self.app_instance.current_date})")
+        self.app_instance._load_app_state()
+        self.app_instance.populate_tasks()
+
+        # Now, call the main app's delete_task method for the specific task
+        # The main app's UI will update
+        self.app_instance.delete_task(task_id)
+
+        # After deleting, refresh the history window to reflect changes
+        self.tasks_data = self.app_instance.data_manager.load_tasks_data() # Reload data
+        self._display_history() # Re-render history list
+        self._plot_xp_history(self.winfo_children()[1]) # Re-plot chart
+
 
 class AddRecurringTaskDialog(CustomDialog):
     """

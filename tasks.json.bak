@@ -1,13 +1,20 @@
 {
   "2025-07-21": {
-    "1c98d605-5d4e-4a8e-a457-850be47cd063": {
-      "id": "1c98d605-5d4e-4a8e-a457-850be47cd063",
+    "6a64edcc-7491-422d-9dc1-e92e31f65b6f": {
+      "id": "6a64edcc-7491-422d-9dc1-e92e31f65b6f",
       "task": "10 ta shena",
-      "done": true,
+      "done": false,
       "xp": 10,
-      "due_time": "07:53"
+      "due_time": null
+    },
+    "2faf42c5-0b31-4dc9-b29f-9b54664f0107": {
+      "id": "2faf42c5-0b31-4dc9-b29f-9b54664f0107",
+      "task": "15 ta shena",
+      "done": false,
+      "xp": 15,
+      "due_time": null
     }
   },
   "_level": 1,
-  "_total_xp": 10
+  "_total_xp": 0
 }
