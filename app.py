@@ -5,6 +5,12 @@ import datetime
 import uuid
 import logging # Import the logging module
 
+# Import typing for more precise type hints
+from typing import List, Dict, Optional, Union
+
+# Import custom TypedDicts for structured data
+from types import Task, RecurringTask # Import Task and RecurringTask TypedDicts
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -43,26 +49,25 @@ class XPDashboardApp:
 
         # Application state variables
         self.current_date: str = datetime.date.today().strftime("%Y-%m-%d")
-        self.tasks_data: dict = {} # Stores all tasks by date
-        # self.tasks will now store tasks as a dictionary {task_id: task_details_dict}
-        self.tasks: dict = {} 
+        self.tasks_data: Dict[str, Dict[str, Task]] = {} # Stores all tasks by date, now with Task TypedDict
+        self.tasks: Dict[str, Task] = {} # Stores tasks for the current date, now with Task TypedDict
 
         self.level: int = 1
         self.total_xp: int = 0
         self.daily_xp_today: int = 0
         self._goal_met_shown_for_today: bool = False # Flag to prevent repeated goal met notifications
 
-        self.xp_categories: dict = {} # Stores XP categories and their values
-        self.xp_goals: dict = {} # Stores daily XP goal and last reset date
-        self.recurring_tasks: list = [] # Stores recurring task definitions
+        self.xp_categories: Dict[str, Optional[int]] = {} # Stores XP categories and their values
+        self.xp_goals: Dict[str, Union[int, str]] = {} # Stores daily XP goal and last reset date
+        self.recurring_tasks: List[RecurringTask] = [] # Stores recurring task definitions, now with RecurringTask TypedDict
 
         self.sort_var = tk.StringVar(value="Default") # Variable for task sorting
         self.sort_options = ["Default", "XP (High to Low)", "XP (Low to High)", "Alphabetical", "Status (Done First)"]
 
-        self.scheduled_notifications = {} # Dictionary to store Tkinter after IDs for notifications
-        self.auto_save_id = None # To store the ID of the scheduled auto-save event
-        self.recently_deleted_tasks = {} # Stores {task_id: (task_data, after_id)} for undo functionality
-        self.undo_notification_id = None # To store the ID of the scheduled undo notification hide event
+        self.scheduled_notifications: Dict[str, str] = {} # Dictionary to store Tkinter after IDs for notifications
+        self.auto_save_id: Optional[str] = None # To store the ID of the scheduled auto-save event
+        self.recently_deleted_tasks: Dict[str, tuple[Task, Optional[str]]] = {} # Stores {task_id: (task_data, after_id)} for undo functionality
+        self.undo_notification_id: Optional[str] = None # To store the ID of the scheduled undo notification hide event
 
         # Setup UI, load state, and populate initial data
         self._setup_ui()
@@ -125,11 +130,20 @@ class XPDashboardApp:
         raw_tasks_for_today = self.tasks_data.get(self.current_date, {})
         if isinstance(raw_tasks_for_today, list):
             logging.info("Old task data format detected. Migrating to new ID-based format.")
-            converted_tasks = {}
-            for task in raw_tasks_for_today:
-                if 'id' not in task:
-                    task['id'] = generate_unique_id() # Assign a new unique ID if missing
-                converted_tasks[task['id']] = task
+            converted_tasks: Dict[str, Task] = {}
+            for task_dict in raw_tasks_for_today:
+                if 'id' not in task_dict:
+                    task_dict['id'] = generate_unique_id() # Assign a new unique ID if missing
+                # Ensure all keys are present and correctly typed for Task TypedDict
+                converted_task: Task = {
+                    "id": task_dict['id'],
+                    "task": task_dict['task'],
+                    "done": task_dict['done'],
+                    "xp": task_dict['xp'],
+                    "due_time": task_dict.get('due_time'),
+                    "is_recurring_instance": task_dict.get('is_recurring_instance', False)
+                }
+                converted_tasks[converted_task['id']] = converted_task
             self.tasks = converted_tasks
             # Immediately save in the new format to prevent repeated conversion on next load
             self.tasks_data[self.current_date] = self.tasks
@@ -137,7 +151,9 @@ class XPDashboardApp:
             logging.info("Task data migration complete.")
         else:
             # New format: dictionary of tasks (already has IDs)
-            self.tasks = raw_tasks_for_today
+            # Ensure loaded tasks conform to Task TypedDict
+            self.tasks = {task_id: Task(**task_dict) for task_id, task_dict in raw_tasks_for_today.items()}
+
 
         # Load global XP and level
         self.level = self.tasks_data.get("_level", 1)
@@ -205,33 +221,33 @@ class XPDashboardApp:
         Generates daily tasks from recurring task definitions if they are due
         and not already present in the current day's task list.
         """
-        today_date_obj = datetime.datetime.strptime(self.current_date, "%Y-%m-%d").date()
-        today_weekday_name = today_date_obj.strftime("%a") # e.g., "Mon", "Tue"
+        today_date_obj: datetime.date = datetime.datetime.strptime(self.current_date, "%Y-%m-%d").date()
+        today_weekday_name: str = today_date_obj.strftime("%a") # e.g., "Mon", "Tue"
 
-        updated_recurring_tasks = []
+        updated_recurring_tasks: List[RecurringTask] = []
         # Create a set of task names already added today for quick lookup
-        tasks_added_today_names = {task['task'] for task in self.tasks.values()}
+        tasks_added_today_names: set[str] = {task['task'] for task in self.tasks.values()}
 
         for r_task in self.recurring_tasks:
-            last_generated_date_str = r_task.get("last_generated_date")
-            last_generated_date_obj = None
+            last_generated_date_str: Optional[str] = r_task.get("last_generated_date")
+            last_generated_date_obj: Optional[datetime.date] = None
             if last_generated_date_str:
                 last_generated_date_obj = datetime.datetime.strptime(last_generated_date_str, "%Y-%m-%d").date()
 
-            should_generate = False
+            should_generate: bool = False
             # Check if the task needs to be generated for today
             if last_generated_date_obj is None or last_generated_date_obj < today_date_obj:
                 if r_task["recurrence_type"] == "daily":
                     should_generate = True
                 elif r_task["recurrence_type"] == "weekly":
-                    if today_weekday_name in r_task["recurrence_value"]:
+                    if isinstance(r_task["recurrence_value"], list) and today_weekday_name in r_task["recurrence_value"]:
                         should_generate = True
 
             if should_generate:
                 # Only add if a task with the same name isn't already present today
                 if r_task["task"] not in tasks_added_today_names:
-                    new_daily_task_id = generate_unique_id() # Generate a unique ID for this new daily instance
-                    new_daily_task = {
+                    new_daily_task_id: str = generate_unique_id() # Generate a unique ID for this new daily instance
+                    new_daily_task: Task = { # Use Task TypedDict
                         "id": new_daily_task_id,
                         "task": r_task["task"],
                         "done": False,
@@ -249,7 +265,7 @@ class XPDashboardApp:
         self.recurring_tasks = updated_recurring_tasks
         self.save_recurring_tasks() # Save updated recurring tasks (with new last_generated_date)
 
-    def sort_tasks(self, tasks_list: list) -> list:
+    def sort_tasks(self, tasks_list: List[Task]) -> List[Task]:
         """
         Sorts the given list of task dictionaries based on the current sort_var selection.
         """
@@ -475,10 +491,10 @@ class XPDashboardApp:
         self.view_history_btn.pack(side="right", padx=5)
 
         # Lists to keep references to dynamically created widgets (for potential future use if direct access is needed)
-        self.task_vars: list = []
-        self.checkbuttons: list = []
-        self.delete_buttons: list = []
-        self.edit_buttons: list = []
+        self.task_vars: List[tk.BooleanVar] = []
+        self.checkbuttons: List[tk.Checkbutton] = []
+        self.delete_buttons: List[tk.Button] = []
+        self.edit_buttons: List[tk.Button] = []
 
         # XP and Goal Met popup labels (initially hidden)
         self.xp_popup_label = tk.Label(self.root, text="", font=("Segoe UI", 16, "bold"), bg=DARK_BG, fg=SUCCESS_COLOR)
@@ -552,20 +568,20 @@ class XPDashboardApp:
         self.edit_buttons.clear()
 
         # Get all current tasks as a list of dictionaries (from the tasks dictionary values)
-        all_current_tasks = list(self.tasks.values()) 
+        all_current_tasks: List[Task] = list(self.tasks.values()) 
         
         # Apply search filter
         search_query: str = self.search_entry.get().strip().lower()
         if search_query:
             logging.debug(f"Applying search filter: '{search_query}'")
-            searched_tasks = [t for t in all_current_tasks if search_query in t['task'].lower()]
+            searched_tasks: List[Task] = [t for t in all_current_tasks if search_query in t['task'].lower()]
         else:
             searched_tasks = list(all_current_tasks)
 
         # Apply completion status filter
         if self.filter_var.get() == FilterMode.DONE.value:
             logging.debug("Applying 'Done' filter.")
-            filtered_tasks = [t for t in searched_tasks if t["done"]]
+            filtered_tasks: List[Task] = [t for t in searched_tasks if t["done"]]
         elif self.filter_var.get() == FilterMode.NOT_DONE.value:
             logging.debug("Applying 'Not Done' filter.")
             filtered_tasks = [t for t in searched_tasks if not t["done"]]
@@ -573,7 +589,7 @@ class XPDashboardApp:
             filtered_tasks = list(searched_tasks)
 
         # Sort the filtered tasks
-        sorted_tasks = self.sort_tasks(filtered_tasks)
+        sorted_tasks: List[Task] = self.sort_tasks(filtered_tasks)
 
         # Display a message if no tasks are found
         if not sorted_tasks:
@@ -593,7 +609,7 @@ class XPDashboardApp:
             var = tk.BooleanVar(value=task["done"]) # Boolean variable for checkbox state
             
             # Construct task display text
-            task_display_text = f"{task['task']} ({task['xp']} XP)"
+            task_display_text: str = f"{task['task']} ({task['xp']} XP)"
             if task.get("due_time"):
                 task_display_text += f" @ {task['due_time']}"
             if task.get("is_recurring_instance"):
@@ -659,7 +675,7 @@ class XPDashboardApp:
         self.search_entry.delete(0, tk.END)
         self.populate_tasks()
 
-    def update_header(self, tasks_list: list = None) -> None:
+    def update_header(self, tasks_list: Optional[List[Task]] = None) -> None:
         """
         Updates the header label to show the current date's task completion status.
         """
@@ -677,7 +693,7 @@ class XPDashboardApp:
         Includes a confirmation dialog for tasks with high XP.
         Updates XP accordingly and refreshes the UI.
         """
-        task_to_toggle = self.tasks.get(task_id) # Retrieve task dictionary by its ID
+        task_to_toggle: Optional[Task] = self.tasks.get(task_id) # Retrieve task dictionary by its ID
         
         if not task_to_toggle:
             logging.error(f"Attempted to toggle non-existent task with ID: {task_id}")
@@ -690,7 +706,7 @@ class XPDashboardApp:
         XP_CONFIRMATION_THRESHOLD = 10 
 
         # Determine if confirmation is needed
-        needs_confirmation = False
+        needs_confirmation: bool = False
         if task_to_toggle["xp"] >= XP_CONFIRMATION_THRESHOLD:
             if not previous_done: # Confirm when marking a high-XP task as done
                 needs_confirmation = True
@@ -701,7 +717,7 @@ class XPDashboardApp:
         
         if needs_confirmation:
             logging.info(f"Confirmation requested for toggling high-XP task: '{task_to_toggle['task']}'")
-            confirm = self._ask_custom_yesno("Confirm Task Status Change", confirm_message)
+            confirm: bool = self._ask_custom_yesno("Confirm Task Status Change", confirm_message)
             if not confirm:
                 logging.info(f"Toggling task '{task_to_toggle['task']}' cancelled by user.")
                 # If user cancels, do not proceed with toggling
@@ -736,7 +752,7 @@ class XPDashboardApp:
         self.total_xp += amount
         # Check for level ups
         while self.total_xp >= xp_needed_for_level(self.level):
-            xp_for_current_level = xp_needed_for_level(self.level)
+            xp_for_current_level: int = xp_needed_for_level(self.level)
             self.total_xp -= xp_for_current_level # Subtract XP for current level
             self.level += 1 # Increment level
             logging.info(f"Level Up! Reached level {self.level}. XP for next level: {xp_needed_for_level(self.level)}")
@@ -925,13 +941,13 @@ class XPDashboardApp:
             logging.info("Plyer not available. Sending notification via messagebox.")
             messagebox.showinfo(title, message)
 
-    def _schedule_notifications_for_task(self, task: dict) -> None:
+    def _schedule_notifications_for_task(self, task: Task) -> None:
         """
         Schedules a Tkinter 'after' event for a task notification if it's undone
         and has a future due_time.
         """
-        task_id = task['id'] # Use task's unique ID as the key for scheduled notifications
-        due_time_str = task.get('due_time')
+        task_id: str = task['id'] # Use task's unique ID as the key for scheduled notifications
+        due_time_str: Optional[str] = task.get('due_time')
 
         # Cancel any existing notification for this task to avoid duplicates
         self._cancel_notification_for_task(task_id)
@@ -952,10 +968,10 @@ class XPDashboardApp:
                     return
 
                 # Calculate time difference in milliseconds
-                time_diff = (target_time - now).total_seconds() * 1000
+                time_diff: float = (target_time - now).total_seconds() * 1000
 
                 if time_diff > 0:
-                    after_id = self.root.after(int(time_diff), lambda: self._trigger_task_notification(task_id))
+                    after_id: str = self.root.after(int(time_diff), lambda: self._trigger_task_notification(task_id))
                     self.scheduled_notifications[task_id] = after_id # Store the after ID
                     logging.info(f"Scheduled notification for task '{task['task']}' (ID: {task_id}) at {due_time_str}.")
             except ValueError as e:
@@ -1004,7 +1020,7 @@ class XPDashboardApp:
         Triggers the actual system notification if the task is still undone.
         """
         # Retrieve the task by its ID to check its current state
-        found_task = self.tasks.get(task_id)
+        found_task: Optional[Task] = self.tasks.get(task_id)
         
         # Only send notification if the task still exists and is not yet done
         if found_task and not found_task['done']:
@@ -1031,7 +1047,7 @@ class XPDashboardApp:
         # Schedule the next auto-save in 5 minutes (300,000 milliseconds)
         # You can adjust this interval as needed (e.g., 60000 for 1 minute)
         AUTO_SAVE_INTERVAL_MS = 300000 
-        self.auto_save_id = self.root.after(AUTO_SAVE_INTERVAL_MS, self._perform_auto_save)
+        self.auto_save_id = self.root.after(int(AUTO_SAVE_INTERVAL_MS), self._perform_auto_save)
         logging.info(f"Auto-save scheduled for {AUTO_SAVE_INTERVAL_MS / 1000} seconds from now.")
 
     def _perform_auto_save(self) -> None:
@@ -1078,7 +1094,7 @@ class XPDashboardApp:
             message,
             buttons=[("Yes", True, SUCCESS_COLOR), ("No", False, ERROR_COLOR)]
         )
-        result = dialog.show()
+        result: bool = dialog.show()
         logging.info(f"Confirmation Dialog result: {result}")
         return result
 
@@ -1086,7 +1102,7 @@ class XPDashboardApp:
         """
         Opens a dialog to allow the user to set or update their daily XP goal.
         """
-        current_goal: int = self.xp_goals.get("daily_goal", 0)
+        current_goal: int = self.xp_goals.get("daily_goal", 0) # type: ignore
         logging.info(f"Opening dialog to set daily XP goal. Current goal: {current_goal}")
         dialog = ui_dialogs.CustomDialog(
             self.root,
@@ -1101,13 +1117,13 @@ class XPDashboardApp:
             goal_value_str: str = dialog.entry_var.get().strip()
             if goal_value_str.isdigit() and int(goal_value_str) >= 0:
                 new_goal: int = int(goal_value_str)
-                self.xp_goals["daily_goal"] = new_goal
-                self.xp_goals["last_daily_reset"] = self.current_date # Reset goal tracking for today
+                self.xp_goals["daily_goal"] = new_goal # type: ignore
+                self.xp_goals["last_daily_reset"] = self.current_date # type: ignore # Reset goal tracking for today
                 # Recalculate daily_xp_today to ensure consistency after setting new goal
                 self.daily_xp_today = sum(t['xp'] for t in self.tasks.values() if t['done'])
                 self.save_goals() # Save updated goal
                 self.update_daily_goal_display() # Refresh goal display
-                self._show_info("Goal Set!", f"Daily XP goal set to {self.xp_goals['daily_goal']} XP.")
+                self._show_info("Goal Set!", f"Daily XP goal set to {self.xp_goals['daily_goal']} XP.") # type: ignore
                 logging.info(f"Daily XP goal set to: {new_goal}")
             else:
                 self._show_error("Error", "Please enter a valid positive number for the goal.")
@@ -1120,15 +1136,15 @@ class XPDashboardApp:
         Updates the daily goal label and progress bar based on current daily XP and goal.
         Triggers a "goal met" popup and notification if the goal is reached.
         """
-        daily_goal: int = self.xp_goals.get("daily_goal", 0)
+        daily_goal: int = self.xp_goals.get("daily_goal", 0) # type: ignore
         
         # Always recalculate daily_xp_today based on current tasks for robustness
         self.daily_xp_today = sum(t['xp'] for t in self.tasks.values() if t['done'])
 
         # Reset daily XP if a new day has started since the last reset
-        if self.xp_goals.get("last_daily_reset") != self.current_date:
+        if self.xp_goals.get("last_daily_reset") != self.current_date: # type: ignore
             self.daily_xp_today = 0
-            self.xp_goals["last_daily_reset"] = self.current_date
+            self.xp_goals["last_daily_reset"] = self.current_date # type: ignore
             self.save_goals()
             self._goal_met_shown_for_today = False # Reset flag for new day
             logging.info("Daily XP reset for new day.")
@@ -1172,16 +1188,18 @@ class XPDashboardApp:
         logging.info(f"Attempting to add new task: '{task_desc}'")
         # Open TaskDetailsDialog to get XP, due time, etc.
         dialog = ui_dialogs.TaskDetailsDialog(self.root, self.xp_categories, initial_task_name=task_desc)
-        returned_task_data = dialog.show() 
-
-        if returned_task_data and isinstance(returned_task_data, dict):
-            new_task_id = generate_unique_id() # Generate a unique ID for the new task
-            new_task: dict = {
-                "id": new_task_id, # Assign the unique ID
+        returned_task_data: Optional[Task] = dialog.show() # Expect Task TypedDict
+        
+        if returned_task_data: # Check if dialog returned data (not cancelled)
+            new_task_id: str = generate_unique_id() # Generate a unique ID for the new task
+            # Create a new Task instance, ensuring all required keys are present
+            new_task: Task = {
+                "id": new_task_id,
                 "task": returned_task_data["task"],
-                "done": False,
+                "done": False, # New tasks are always not done
                 "xp": returned_task_data["xp"],
-                "due_time": returned_task_data["due_time"]
+                "due_time": returned_task_data.get("due_time"), # Optional
+                "is_recurring_instance": False # New tasks are not recurring instances by default
             }
             self.tasks[new_task_id] = new_task # Add the new task to the tasks dictionary
             self.save_tasks() # Save updated tasks
@@ -1199,7 +1217,7 @@ class XPDashboardApp:
         logging.debug("Enter key pressed in task entry. Calling add_task_from_entry.")
         self.add_task_from_entry()
 
-    def _ask_manual_xp(self, task_desc: str, initial_xp: int = None) -> int | None:
+    def _ask_manual_xp(self, task_desc: str, initial_xp: Optional[int] = None) -> Optional[int]:
         """
         Opens a custom dialog to ask the user for manual XP input.
         Used when adding/editing categories.
@@ -1233,10 +1251,10 @@ class XPDashboardApp:
         """
         logging.info("Opening dialog to add recurring task.")
         dialog = ui_dialogs.AddRecurringTaskDialog(self.root, self.xp_categories)
-        returned_task_data = dialog.show()
+        returned_task_data: Optional[RecurringTask] = dialog.show() # Expect RecurringTask TypedDict
 
-        if returned_task_data and isinstance(returned_task_data, dict):
-            # Assign a unique ID to the recurring task itself
+        if returned_task_data: # Check if dialog returned data (not cancelled)
+            # Assign a unique ID to the recurring task itself if it doesn't have one
             if 'id' not in returned_task_data:
                 returned_task_data['id'] = generate_unique_id()
             self.recurring_tasks.append(returned_task_data) # Add to recurring tasks list
@@ -1262,8 +1280,8 @@ class XPDashboardApp:
         Identifies the task by its unique ID.
         """
         logging.info(f"Attempting to edit recurring task with ID: {task_id_to_edit}")
-        original_index = -1
-        task_to_edit = None
+        original_index: int = -1
+        task_to_edit: Optional[RecurringTask] = None
         # Find the recurring task by its ID
         for i, task in enumerate(self.recurring_tasks):
             if task.get('id') == task_id_to_edit:
@@ -1271,16 +1289,16 @@ class XPDashboardApp:
                 task_to_edit = task
                 break
         
-        if original_index == -1:
+        if original_index == -1 or task_to_edit is None:
             logging.error(f"Could not find recurring task with ID: {task_id_to_edit} to edit.")
             self._show_error("Error", "Could not find the recurring task to edit.")
             return
 
         # Open the AddRecurringTaskDialog in edit mode
         dialog = ui_dialogs.AddRecurringTaskDialog(self.root, self.xp_categories, initial_task=task_to_edit)
-        returned_task_data = dialog.show() 
+        returned_task_data: Optional[RecurringTask] = dialog.show() # Expect RecurringTask TypedDict
 
-        if returned_task_data and isinstance(returned_task_data, dict):
+        if returned_task_data: # Check if dialog returned data (not cancelled)
             # Ensure the ID remains the same for the existing task
             returned_task_data["id"] = task_id_to_edit 
             # Preserve last_generated_date, as it's not edited in the dialog
@@ -1302,8 +1320,8 @@ class XPDashboardApp:
         Identifies the task by its unique ID.
         """
         logging.info(f"Attempting to delete recurring task with ID: {task_id_to_delete}")
-        task_found = None
-        original_index = -1
+        task_found: Optional[RecurringTask] = None
+        original_index: int = -1
         # Find the recurring task by its ID
         for i, task in enumerate(self.recurring_tasks):
             if task.get('id') == task_id_to_delete:
@@ -1340,7 +1358,7 @@ class XPDashboardApp:
         Identifies the task by its unique ID.
         """
         logging.info(f"Attempting to edit daily task with ID: {task_id_to_edit}")
-        task_to_edit = self.tasks.get(task_id_to_edit) # Retrieve task dictionary by its ID
+        task_to_edit: Optional[Task] = self.tasks.get(task_id_to_edit) # Retrieve task dictionary by its ID
         
         if not task_to_edit:
             logging.error(f"Could not find daily task with ID: {task_id_to_edit} to edit.")
@@ -1351,9 +1369,9 @@ class XPDashboardApp:
 
         # Open TaskDetailsDialog in edit mode, passing the full task dictionary
         dialog = ui_dialogs.TaskDetailsDialog(self.root, self.xp_categories, initial_task=task_to_edit)
-        returned_task_data = dialog.show() 
+        returned_task_data: Optional[Task] = dialog.show() # Expect Task TypedDict
 
-        if returned_task_data and isinstance(returned_task_data, dict):
+        if returned_task_data: # Check if dialog returned data (not cancelled)
             # Update the task details in the self.tasks dictionary
             self.tasks[task_id_to_edit]["task"] = returned_task_data["task"]
             self.tasks[task_id_to_edit]["xp"] = returned_task_data["xp"]
@@ -1384,7 +1402,7 @@ class XPDashboardApp:
         temporarily for an "undo" option and shows a notification.
         """
         logging.info(f"Attempting to delete daily task with ID: {task_id_to_delete}")
-        task_found = self.tasks.get(task_id_to_delete) # Retrieve task dictionary by its ID
+        task_found: Optional[Task] = self.tasks.get(task_id_to_delete) # Retrieve task dictionary by its ID
 
         if not task_found:
             logging.error(f"Could not find daily task with ID: {task_id_to_delete} to delete.")
@@ -1413,7 +1431,7 @@ class XPDashboardApp:
 
             # Store the task for potential undo
             # Schedule permanent deletion after 5 seconds
-            undo_timeout_id = self.root.after(5000, lambda: self._permanently_delete_task(task_id_to_delete, save_state=True))
+            undo_timeout_id: str = self.root.after(5000, lambda: self._permanently_delete_task(task_id_to_delete, save_state=True))
             self.recently_deleted_tasks[task_id_to_delete] = (task_found, undo_timeout_id)
             
             self.populate_tasks() # Refresh UI to show task removed
@@ -1464,7 +1482,9 @@ class XPDashboardApp:
 
         # For simplicity, we handle only the last deleted task
         # Get the first (and only) item from the dictionary
-        task_id_to_restore = list(self.recently_deleted_tasks.keys())[0]
+        task_id_to_restore: str = list(self.recently_deleted_tasks.keys())[0]
+        task_data_to_restore: Task
+        after_id: Optional[str]
         task_data_to_restore, after_id = self.recently_deleted_tasks.pop(task_id_to_restore)
 
         # Cancel the scheduled permanent deletion
@@ -1503,7 +1523,7 @@ class XPDashboardApp:
         logging.info("Opening date selection dialog.")
         initial_date_obj: datetime.date = datetime.datetime.strptime(self.current_date, "%Y-%m-%d").date()
         calendar_dialog = ui_dialogs.CalendarDialog(self.root, initial_date=initial_date_obj)
-        selected_date_str: str | None = calendar_dialog.show()
+        selected_date_str: Optional[str] = calendar_dialog.show()
 
         if selected_date_str:
             logging.info(f"Date selected: {selected_date_str}. Changing current date.")
@@ -1549,7 +1569,7 @@ class XPDashboardApp:
         cat_canvas.pack(side="left", fill="both", expand=True)
         cat_scrollbar.pack(side="right", fill="y")
 
-        self.cat_vars: dict = {} # Stores StringVar for each category's XP value
+        self.cat_vars: Dict[str, tk.StringVar] = {} # Stores StringVar for each category's XP value
 
         def populate_category_list() -> None:
             """Populates the list of XP categories in the edit window."""
@@ -1613,9 +1633,9 @@ class XPDashboardApp:
                     return
                 
                 # Ask for default XP for the new category
-                xp_value: int | None = self._ask_manual_xp(f"Default XP for '{category_name}'", initial_xp="")
+                xp_value: Optional[int] = self._ask_manual_xp(f"Default XP for '{category_name}'", initial_xp=None)
                 if xp_value is None:
-                    xp_for_new_cat: int | None = None # User cancelled or entered invalid XP
+                    xp_for_new_cat: Optional[int] = None # User cancelled or entered invalid XP
                 else:
                     xp_for_new_cat = xp_value
 
@@ -1646,7 +1666,7 @@ class XPDashboardApp:
         def save_and_close_categories() -> None:
             """Saves all changes to XP categories and closes the edit window."""
             logging.info("Saving category changes and closing window.")
-            new_categories: dict = {}
+            new_categories: Dict[str, Optional[int]] = {}
             for cat, var in self.cat_vars.items():
                 val: str = var.get().strip()
                 if val == "":
@@ -1687,7 +1707,7 @@ class XPDashboardApp:
     def view_xp_history(self) -> None:
         """Opens a new window to display the history of daily XP earned."""
         logging.info("Opening XP History window.")
-        latest_tasks_data: dict = self.data_manager.load_tasks_data() # Load fresh data
+        latest_tasks_data: Dict[str, Dict[str, Task]] = self.data_manager.load_tasks_data() # Load fresh data
         # Pass the main app instance to the history window
         ui_dialogs.XPHistoryWindow(self.root, latest_tasks_data, self)
 
