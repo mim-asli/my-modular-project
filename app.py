@@ -9,7 +9,8 @@ import logging # Import the logging module
 from typing import List, Dict, Optional, Union
 
 # Import custom TypedDicts for structured data
-from types import Task, RecurringTask # Import Task and RecurringTask TypedDicts
+# Changed import from 'types' to 'custom_types' to avoid conflict with built-in 'types' module
+from custom_types import Task, RecurringTask 
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
